@@ -138,12 +138,70 @@ const prizes = ["Paquete de fotos","Paquete de videos","Videollamada 10min","Vue
 const colors = ["#ff8ec8","#ff5ab0","#ffc2e3","#ff2a8a","#ffb3dc"];
 const textColors = ["#5a102e","#fff0f8","#5a1030","#ffffff","#5a102e"];
 const segmentAngle = 360 / prizes.length; // 72
-const firstStart = -90 - segmentAngle/2; // Para que el segmento 0 quede centrado arriba
+const firstStart = -90 - segmentAngle/2;
 
 let currentRotation = 0;
 let isSpinning = false;
 let winnerIndex = null;
 const WHATSAPP_NUMBER = "527772135931";
+
+// --- SISTEMA DE TOKENS VINCULADO CON ADMIN DEL DADO ---
+const urlParams = new URLSearchParams(window.location.search);
+const TOKEN_PARAM = urlParams.get('t');
+const PHONE_PARAM = urlParams.get('c');
+const JUGADAS_PARAM = parseInt(urlParams.get('j') || '1', 10);
+
+function loadTokenStore(){
+  try{ return JSON.parse(localStorage.getItem('yulliza_ruleta_tokens') || '{}'); }catch(e){ return {}; }
+}
+function saveTokenStore(s){ localStorage.setItem('yulliza_ruleta_tokens', JSON.stringify(s)); }
+function loadDadoHistorial(){
+  try{ return JSON.parse(localStorage.getItem('yulliza-dado-historial') || '[]'); }catch(e){ return []; }
+}
+
+let activeTokenData = null;
+let tokenBadgeEl = null;
+
+if(TOKEN_PARAM){
+  const store = loadTokenStore();
+  // Si viene del admin del dado, el historial del dado también puede tenerlo
+  if(!store[TOKEN_PARAM]){
+    const total = Math.min(50, Math.max(1, JUGADAS_PARAM || 1));
+    store[TOKEN_PARAM] = {
+      token: TOKEN_PARAM,
+      phone: PHONE_PARAM || '',
+      total: total,
+      used: 0,
+      created: new Date().toISOString(),
+      lastPrize: null
+    };
+    saveTokenStore(store);
+  }
+  activeTokenData = store[TOKEN_PARAM];
+  // Limpiar el flag de giro único para que el token mande
+  // (no borramos yulliza_spin_used para mantener compatibilidad sin token)
+}
+
+function getRemainingSpins(){
+  if(activeTokenData){
+    return Math.max(0, activeTokenData.total - activeTokenData.used);
+  }
+  return localStorage.getItem('yulliza_spin_used') === 'true' ? 0 : 1;
+}
+
+function consumeOneSpin(prizeName){
+  if(!activeTokenData) return;
+  const store = loadTokenStore();
+  const t = store[TOKEN_PARAM];
+  if(t){
+    t.used = (t.used || 0) + 1;
+    t.lastSpin = new Date().toISOString();
+    t.lastPrize = prizeName;
+    saveTokenStore(store);
+    activeTokenData = t;
+  }
+}
+
 
 const wheel = document.getElementById('wheel');
 const segmentsGroup = document.getElementById('segments');
@@ -297,10 +355,17 @@ function launchConfetti(){
 
 function spin(){
   if(isSpinning) return;
-  // Verificar si ya giró
-  if(localStorage.getItem('yulliza_spin_used') === 'true'){
-    showUsed();
-    return;
+  // Verificar si ya giró - con soporte de tokens
+  if(activeTokenData){
+    if(getRemainingSpins() <= 0){
+      showUsed();
+      return;
+    }
+  } else {
+    if(localStorage.getItem('yulliza_spin_used') === 'true'){
+      showUsed();
+      return;
+    }
   }
 
   isSpinning = true;
@@ -324,15 +389,23 @@ function spin(){
     currentRotation = target;
     drawWheel(winnerIndex);
     
-    // Guardar en localStorage - solo un giro por cliente
-    localStorage.setItem('yulliza_spin_used','true');
+    // Guardar en localStorage - con soporte de tokens
+    if(activeTokenData){
+      consumeOneSpin(prizes[winnerIndex]);
+    } else {
+      localStorage.setItem('yulliza_spin_used','true');
+    }
     localStorage.setItem('yulliza_prize', prizes[winnerIndex]);
     localStorage.setItem('yulliza_prize_index', winnerIndex);
     localStorage.setItem('yulliza_date', new Date().toISOString());
 
     // Mostrar modal con premio coincidente
     prizeBadge.textContent = prizes[winnerIndex] + "!";
-    const waText = `¡Hola Yulliza ♡! Gané ${prizes[winnerIndex]} en La Ruleta de Yulliza 🎀✨ Quiero reclamar mi premio`;
+    let waText = `¡Hola Yulliza ♡! Gané ${prizes[winnerIndex]} en La Ruleta de Yulliza 🎀✨ Quiero reclamar mi premio`;
+    if(activeTokenData){
+      waText += `\n\nToken: ${activeTokenData.token}\nGiros usados: ${activeTokenData.used+1}/${activeTokenData.total}`;
+      if(TOKEN_PARAM) waText += `\nLink: ${window.location.href}`;
+    }
     claimBtn.href = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(waText)}`;
     
     debugInfo.textContent = `mod:${result.mod.toFixed(1)}° → idx:${result.idx}`;
@@ -344,16 +417,46 @@ function spin(){
 }
 
 function showUsed(){
+  const remaining = getRemainingSpins();
+  const prize = localStorage.getItem('yulliza_prize');
+  
+  // Caso con token activo
+  if(activeTokenData){
+    if(remaining <= 0){
+      spinBtn.classList.add('hidden');
+      usedMessage.classList.remove('hidden');
+      lastPrizeEl.textContent = `Usaste tus ${activeTokenData.total} giros • Último: ${prize || activeTokenData.lastPrize || ''}`;
+      spinText.textContent = "GIROS AGOTADOS";
+      const moreBtn = document.getElementById('moreSpinsBtn');
+      const waMore = `Hola Yulliza ♡ ya usé mis ${activeTokenData.total} giros del token ${activeTokenData.token} y gané ${prize || ''}. Quiero más giros 🙏🎀`;
+      moreBtn.href = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(waMore)}`;
+    } else {
+      // Aún le quedan giros
+      spinBtn.classList.remove('hidden');
+      usedMessage.classList.add('hidden');
+      spinBtn.disabled = false;
+      if(remaining === 1){
+        spinText.textContent = `GIRAR • Te queda ${remaining} giro 🎀`;
+      } else {
+        spinText.textContent = `GIRAR • Te quedan ${remaining} giros 🎀`;
+      }
+      // Actualizar badge de token si existe
+      if(tokenBadgeEl){
+        tokenBadgeEl.textContent = `🎟️ Token ${activeTokenData.token.slice(0,12)}... • ${remaining}/${activeTokenData.total} giros restantes`;
+      }
+    }
+    return;
+  }
+
+  // Caso sin token (comportamiento original)
   const used = localStorage.getItem('yulliza_spin_used') === 'true';
   if(used){
     spinBtn.classList.add('hidden');
     usedMessage.classList.remove('hidden');
-    const prize = localStorage.getItem('yulliza_prize');
     if(prize){
       lastPrizeEl.textContent = `Ganaste: ${prize}`;
       spinText.textContent = "YA GIRASTE";
     }
-    // Botón de más giros
     const moreBtn = document.getElementById('moreSpinsBtn');
     const waMore = `Hola Yulliza ♡ ya usé mi giro en La Ruleta de Yulliza y gané ${prize || ''}. Quiero más giros 🙏🎀`;
     moreBtn.href = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(waMore)}`;
@@ -373,10 +476,33 @@ modalBackdrop.addEventListener('click', closeModal);
 drawWheel();
 showUsed();
 
-// Prevenir trampa: deshabilitar si ya giró
-if(localStorage.getItem('yulliza_spin_used') === 'true'){
+// Crear badge de token si existe
+(function(){
+  if(TOKEN_PARAM){
+    const container = document.querySelector('.relative.z-10.mt-8') || document.body;
+    const badge = document.createElement('div');
+    badge.id = 'tokenBadge';
+    badge.className = 'mb-3 px-3 py-1.5 rounded-full bg-white/10 border border-[#ff8ec8]/30 text-[10px] font-bold tracking-widest text-[#ffc2e3] backdrop-blur text-center';
+    const rem = activeTokenData ? (activeTokenData.total - activeTokenData.used) : JUGADAS_PARAM;
+    badge.textContent = `🎟️ Token ${TOKEN_PARAM.slice(0,16)}... • ${rem} giros activos`;
+    // Insertar antes del botón
+    const spinContainer = document.querySelector('.relative.z-10.mt-8');
+    if(spinContainer) spinContainer.prepend(badge);
+    tokenBadgeEl = badge;
+  }
+})();
+
+// Prevenir trampa: deshabilitar si ya giró (solo sin token)
+if(!TOKEN_PARAM && localStorage.getItem('yulliza_spin_used') === 'true'){
   spinBtn.disabled = true;
   spinText.textContent = "YA USASTE TU GIRO";
+}
+// Si hay token, actualizar texto inicial
+if(TOKEN_PARAM && activeTokenData){
+  const rem = getRemainingSpins();
+  if(rem > 0){
+    spinText.textContent = rem === 1 ? `GIRAR • Te queda ${rem} giro 🎀` : `GIRAR • Te quedan ${rem} giros 🎀`;
+  }
 }
 </script>
 </body>
